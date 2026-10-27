@@ -51,7 +51,7 @@ except Exception as e:  # fall back to plain requests
     import requests as http
     IMPERSONATE = {}
 
-VERSION = "3.4.0"
+VERSION = "3.4.2"
 PORT = 8765
 TIMEOUT = 20
 DEBUG = False
@@ -1639,6 +1639,8 @@ td.none{color:#3d4c96}
 .btn2{font:20px var(--mono);text-transform:uppercase;background:#000;color:var(--yellow);border:2px solid var(--yellow);
   padding:3px 10px;cursor:pointer;box-shadow:none;transform:none}
 .btn2:hover{background:var(--yellow);color:#000}
+.btn2.tip{text-decoration:none;display:inline-block;color:#ff8f8a;border-color:#ff8f8a}
+.btn2.tip:hover{background:#ff5e5b;color:#000}
 .btn2.red{color:var(--bad);border-color:var(--bad)}.btn2.red:hover{background:var(--bad);color:#000}
 .panels{display:grid;grid-template-columns:2fr 1fr;gap:18px;margin-top:24px}
 @media (max-width:1000px){.panels{grid-template-columns:1fr}}
@@ -1746,6 +1748,7 @@ td.none{color:#3d4c96}
   <span><span class="k">F1</span>Search</span><span><span class="k">ESC</span>Clear</span>
   <span id="st-msg">Ready</span>
   <span class="r"><span class="dot">●</span> Online · 5 suppliers</span>
+  <span><a class="btn2 tip" href="https://ko-fi.com/majbyte" target="_blank" rel="noopener" title="Enjoying it? Buy the author a coffee on Ko-fi">&#9749; Tip</a></span>
   <span><button class="btn2 red" id="quit" type="button" title="Stop the app">Quit</button></span>
 </div></div>
 <script>

@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.4.2
+- Optional Ko-fi tip links: GitHub Sponsor button, README badge and a ☕ Tip button in the app
+- install.bat closes a running copy before updating; README explains upgrading
+
 ## 3.4.0
 - **Music department**: CD, vinyl and cassette prices across all five shops (eBay Music, Amazon CDs & Vinyl, CeX music, HMV, musicMagpie)
 - **Artist search**: an artist's albums from Wikidata, price-checked in one go

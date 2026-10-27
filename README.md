@@ -1,5 +1,7 @@
 # 📼 Film Price Checker
 
+[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/majbyte)
+
 **Compare DVD, Blu-ray and 4K UHD film prices — and CD, vinyl and cassette music prices — across UK shops (CeX, musicMagpie, eBay, HMV and Amazon) from one retro video-store terminal.**
 
 Type a film, an actor or a director — or switch to the **Music** department and type an album or artist — and see every shop's price side by side, with the cheapest highlighted. Set a target price and it'll pop up a Windows notification when a film drops below it.
@@ -112,6 +114,14 @@ Optional: free [eBay developer keys](https://developer.ebay.com) make eBay faste
 - **For personal, occasional use.** It reads the shops' public search pages the way a browser does; automated access may be against some sites' terms, and heavy use can get you temporarily blocked. Please be considerate.
 - **Always check the price on the shop's page before buying** — listings change quickly, and the app reads prices from pages that can change layout.
 - Film and album data from Wikidata (CC0). Zavvi was supported until it ceased trading in October 2026.
+
+## Support
+
+Film Price Checker is free for personal use. If it saves you money on a disc or two, you can say thanks with a coffee:
+
+[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/majbyte)
+
+There's also a **☕ Tip** button in the app's bottom bar. Completely optional — thank you!
 
 ## Licence
 
