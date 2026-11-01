@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.5.0
+- **Local CeX stock**: set your postcode and distance, and CeX results show which nearby CeX stores have each item (with stock count and miles), including items out of stock online
+- Self-test checks the store stock lookup
+
 ## 3.4.2
 - Optional Ko-fi tip links: GitHub Sponsor button, README badge and a ☕ Tip button in the app
 - install.bat closes a running copy before updating; README explains upgrading

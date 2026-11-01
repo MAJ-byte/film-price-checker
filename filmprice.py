@@ -21,7 +21,7 @@ TROUBLESHOOTING:
     python filmprice.py --debug        # saves each shop's raw page to the debug folder
 
 Files it creates next to itself (all private to you, none are uploaded anywhere):
-watchlist.json, filmprice.log, filmprice.ico, selftest.txt, browser_profile_* (the helper
+watchlist.json, settings.json (your postcode, if you set one), filmprice.log, filmprice.ico, selftest.txt, browser_profile_* (the helper
 browser's own cookies for the shops — never your normal browser's).
 
 Optional: free eBay developer keys make eBay faster and more reliable:
@@ -51,7 +51,7 @@ except Exception as e:  # fall back to plain requests
     import requests as http
     IMPERSONATE = {}
 
-VERSION = "3.4.2"
+VERSION = "3.5.0"
 PORT = 8765
 TIMEOUT = 20
 DEBUG = False
@@ -385,6 +385,36 @@ class Browser:
     def get(self, url, capture=None):
         return self.ex.submit(self._load, url, capture).result(timeout=90)
 
+    def _json_get(self, urls, origin):
+        """Fetch JSON APIs from inside a real page on `origin` (e.g. CeX's own site), so the
+        site's bot check sees a normal browser making the same calls its own pages make."""
+        page = self._page()
+
+        def settle():
+            deadline = time.time() + 20
+            while time.time() < deadline and is_challenge(page.content()):
+                page.wait_for_timeout(500)
+        if not page.url.startswith(origin):
+            page.goto(origin, wait_until="domcontentloaded", timeout=30000)
+            settle()
+        out = page.evaluate("""async (urls) => Promise.all(urls.map(async u => {
+            try { const r = await fetch(u, {headers: {'Accept': 'application/json'}});
+                  return r.ok ? await r.json() : {__error: 'HTTP ' + r.status}; }
+            catch (e) { return {__error: String(e)}; } }))""", urls)
+        # anything the in-page fetch couldn't get: open the API address itself (passes challenges)
+        for i, (u, res) in enumerate(zip(urls, out)):
+            if isinstance(res, dict) and "__error" in res:
+                try:
+                    page.goto(u, wait_until="domcontentloaded", timeout=30000)
+                    settle()
+                    out[i] = json.loads(page.inner_text("body"))
+                except Exception as e:
+                    out[i] = {"__error": f"{res['__error']}; direct: {str(e)[:120]}"}
+        return out
+
+    def json_get(self, urls, origin):
+        return self.ex.submit(self._json_get, urls, origin).result(timeout=150)
+
 
 BROWSER = Browser()
 
@@ -594,6 +624,7 @@ def cex_boxes(data, music=False):
                 it = item(n.get("boxName"), parse_price(n.get("sellPrice")),
                           f"https://uk.webuy.com/product-detail?id={bid}", "cex",
                           condition="Used (CeX graded)", image=img, stock=stock)
+                it["box"] = str(bid)
                 it["format"] = detect_format(str(cat), n.get("boxName"))
                 supercat = str(n.get("superCatFriendlyName") or n.get("superCatName") or "")
                 if music and it["format"] == "Other" and MUSIC_WORDS.search(f"{cat} {supercat}") \
@@ -705,6 +736,8 @@ def search_cex(q, o):
         res = cex_boxes(bodies, music=music)
         if not res:
             res = from_cards(BeautifulSoup(html, "lxml"), "https://uk.webuy.com", "cex", href_hint=r"product-detail")
+            for r in res:
+                r["box"] = (urllib.parse.parse_qs(urllib.parse.urlparse(r.get("url") or "").query).get("id") or [None])[0]
             if music:  # card text carries CeX's category, e.g. "Music CDs | Oasis - Definitely Maybe"
                 for r in res:
                     ctx = r.get("_ctx", "")
@@ -1272,6 +1305,211 @@ def person_lookup(name, role, person_id=None):
             "films": filmography(person_id, role)}
 
 
+# --------------------------------------------------------------------------- your area + CeX store stock
+
+SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
+_settings_lock = threading.RLock()
+
+
+def load_settings():
+    with _settings_lock:
+        try:
+            with open(SETTINGS_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            d = {}
+        d.setdefault("radius", 15)
+        return d
+
+
+def save_settings(d):
+    with _settings_lock:
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2)
+        os.replace(tmp, SETTINGS_FILE)
+
+
+def public_settings():
+    d = load_settings()
+    return {"postcode": d.get("postcode", ""), "label": d.get("label", ""), "radius": d.get("radius", 15),
+            "located": d.get("lat") is not None and d.get("lon") is not None}
+
+
+def _plain_json(url):
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": f"FilmPriceChecker/{VERSION}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
+def geocode_postcode(pc):
+    """UK postcode (full, e.g. EX8 1AA, or just the first half, e.g. EX8) -> (lat, lon, area name),
+    using the free postcodes.io service."""
+    compact = re.sub(r"\s+", "", (pc or "").upper())
+    if not re.fullmatch(r"[A-Z]{1,2}\d[A-Z\d]?(\d[A-Z]{2})?", compact):
+        raise ValueError("enter a UK postcode, e.g. EX8 1AA (or just EX8)")
+    full = re.fullmatch(r"[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}", compact) is not None
+    try:
+        d = _plain_json(f"https://api.postcodes.io/{'postcodes' if full else 'outcodes'}/{compact}")
+    except Exception as e:
+        raise ValueError(f"couldn't look up that postcode right now ({type(e).__name__}) - try again shortly")
+    r = (d or {}).get("result")
+    if not r or r.get("latitude") is None:
+        raise ValueError(f"postcode {pc.strip().upper()} wasn't found")
+    area = r.get("admin_ward") if full else None
+    district = r.get("admin_district")
+    if isinstance(district, list):
+        district = district[0] if district else None
+    label = ", ".join(x for x in (area, district) if x) or compact
+    pretty = (compact[:-3] + " " + compact[-3:]) if full else compact
+    return r["latitude"], r["longitude"], label, pretty
+
+
+def update_settings(body):
+    d = load_settings()
+    try:
+        radius = int(float(body.get("radius", d.get("radius", 15))))
+    except (TypeError, ValueError):
+        radius = 15
+    d["radius"] = max(1, min(radius, 200))
+    if "postcode" in body:
+        pc = (body.get("postcode") or "").strip()
+        if not pc:
+            for k in ("postcode", "lat", "lon", "label"):
+                d.pop(k, None)
+        elif re.sub(r"\s+", "", pc.upper()) != re.sub(r"\s+", "", d.get("postcode", "")):
+            lat, lon, label, pretty = geocode_postcode(pc)
+            d.update(postcode=pretty, lat=lat, lon=lon, label=label)
+    save_settings(d)
+    _cex_stock_cache.clear()
+    return public_settings()
+
+
+CEX_API = "https://wss2.cex.uk.webuy.io/v3"
+_cex_stock_cache = {}                       # (box, lat, lon) -> (time, stores)
+_cex_store_coords = {"t": 0, "by_id": {}}   # storeId -> (lat, lon)
+
+
+def _cex_json(urls):
+    """CeX's own API: quick request first; if CeX's bot check blocks it, ask from inside the real
+    CeX website in the helper browser."""
+    out = [None] * len(urls)
+    try:
+        out[0] = json.loads(http_get(urls[0], "cex_stores", headers={
+            "Accept": "application/json", "Origin": "https://uk.webuy.com", "Referer": "https://uk.webuy.com/"}))
+        for i in range(1, len(urls)):  # first one got through, so carry on the quick way
+            try:
+                out[i] = json.loads(http_get(urls[i], "cex_stores", headers={
+                    "Accept": "application/json", "Origin": "https://uk.webuy.com", "Referer": "https://uk.webuy.com/"}))
+            except Exception as e:
+                out[i] = {"__error": str(e)[:150]}
+        return out
+    except Exception as e:
+        if not HAVE_BROWSER:
+            raise RuntimeError(f"CeX blocked the store check ({e}) - {BROWSER_HINT}")
+    return BROWSER.json_get(urls, "https://uk.webuy.com/")
+
+
+def _cex_unwrap(d, key):
+    if not isinstance(d, dict):
+        return []
+    data = (d.get("response") or {}).get("data") if isinstance(d.get("response"), dict) else None
+    return (data or d).get(key) or []
+
+
+def miles_between(lat1, lon1, lat2, lon2):
+    import math
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2 +
+         math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2)
+    return 3958.8 * 2 * math.asin(math.sqrt(a))
+
+
+def cex_store_coords():
+    """All CeX stores' locations (cached for a day) so distances can be worked out exactly."""
+    if _cex_store_coords["by_id"] and time.time() - _cex_store_coords["t"] < 86400:
+        return _cex_store_coords["by_id"]
+    by_id = {}
+    try:
+        for st in _cex_unwrap(_cex_json([f"{CEX_API}/stores"])[0], "stores"):
+            try:
+                by_id[st["storeId"]] = (float(st["latitude"]), float(st["longitude"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+    except Exception:
+        pass  # fall back to CeX's own distance figures
+    _cex_store_coords.update(t=time.time(), by_id=by_id)
+    return by_id
+
+
+def _qty(v):
+    """CeX stock counts come as 0, 2, "4+" ... -> (number for sorting, text to show)."""
+    if v is None:
+        return 0, ""
+    m = re.match(r"\s*(\d+)", str(v))
+    return (int(m.group(1)), str(v).strip()) if m else (0, str(v))
+
+
+def cex_local_stock(box_ids, max_items=40, where=None):
+    """For each CeX product id: the stores near you that have it in stock, nearest first.
+    `where` = {"lat", "lon", "radius", "label"} overrides your saved area (used by the self-test)."""
+    st = where or load_settings()
+    if st.get("lat") is None:
+        raise ValueError("set your postcode first (CeX near: box)")
+    lat, lon, radius = st["lat"], st["lon"], float(st.get("radius", 15))
+    ids = [b for b in dict.fromkeys(box_ids) if b and re.fullmatch(r"[A-Za-z0-9._-]{2,40}", b)][:max_items]
+    now, todo, found = time.time(), [], {}
+    for b in ids:
+        hit = _cex_stock_cache.get((b, lat, lon))
+        if hit and now - hit[0] < 600:
+            found[b] = hit[1]
+        else:
+            todo.append(b)
+    if todo:
+        urls = [f"{CEX_API}/boxes/{urllib.parse.quote(b)}/neareststores?latitude={lat}&longitude={lon}" for b in todo]
+        raw = _cex_json(urls)
+        coords = cex_store_coords()
+        for b, d in zip(todo, raw):
+            if isinstance(d, dict) and "__error" in d:
+                found[b] = {"error": d["__error"]}
+                continue
+            stores = []
+            for s in _cex_unwrap(d, "nearestStores"):
+                n, shown = _qty(s.get("quantityOnHand"))
+                if n <= 0:
+                    continue
+                c = coords.get(s.get("storeId"))
+                if c:
+                    dist = miles_between(lat, lon, c[0], c[1])
+                else:
+                    try:
+                        dist = float(s.get("distance"))
+                    except (TypeError, ValueError):
+                        dist = None
+                stores.append({"name": s.get("storeName") or f"store {s.get('storeId')}", "id": s.get("storeId"),
+                               "qty": shown, "miles": round(dist, 1) if dist is not None else None})
+            stores.sort(key=lambda x: (x["miles"] is None, x["miles"] or 0))
+            _cex_stock_cache[(b, lat, lon)] = (now, stores)
+            found[b] = stores
+    results = {}
+    for b in ids:
+        stores = found.get(b, [])
+        if isinstance(stores, dict):  # error
+            results[b] = stores
+            continue
+        near = [x for x in stores if x["miles"] is None or x["miles"] <= radius]
+        results[b] = {"near": near[:3], "more": max(0, len(near) - 3),
+                      "nearest": None if near else (stores[0] if stores else None)}
+    return {"radius": int(radius), "label": st.get("label"), "results": results}
+
+
 # --------------------------------------------------------------------------- sell prices
 
 def sell_lookup(barcode):
@@ -1631,6 +1869,17 @@ td.none{color:#3d4c96}
   box-shadow:2px 2px 0 #000;background:#c0c6d8;color:#000;transform:rotate(2deg)}
 .ed.Steelbook{background:linear-gradient(135deg,#eef1f6,#9aa3b5 55%,#e4e8ef)}
 .ed.Limited{background:#b678ff}.ed.Box{background:#ff8a3d}.ed.Region{background:#000;color:var(--cyan);border-color:var(--cyan)}
+.stores{grid-column:2/4;font-size:16px;color:var(--cyan);text-transform:uppercase;margin-top:1px}
+.stores b{font-weight:400;color:#000;background:var(--cyan);padding:0 4px;margin-right:4px}
+.stores .loading{font-size:16px}
+.it:hover .stores{color:var(--navy2)}
+.it.oos.local{opacity:1}.it.oos.local .p{text-decoration:none}
+.pcbox{display:flex;align-items:center;gap:6px}
+.pcbox input{width:118px;background:#000;border:2px solid var(--cyan);color:var(--cyan);font:20px var(--mono);
+  text-transform:uppercase;padding:0 6px}
+.pcbox select{background:#000;color:var(--cyan);border:2px solid var(--cyan);font:20px var(--mono)}
+.btn2.mini{font-size:15px;padding:0 6px;border-width:1px;line-height:1.2}
+.stat{gap:6px;align-items:center;white-space:nowrap}
 .sell{grid-column:2/4;font-size:16px;color:var(--good);text-transform:uppercase;margin-top:-2px}
 .sell b{font-weight:400;color:#000;background:var(--good);padding:0 4px;margin-right:4px}
 .it:hover .sell{color:var(--navy2)}
@@ -1668,7 +1917,7 @@ td.none{color:#3d4c96}
 .grid.narrow .it{grid-template-columns:46px 1fr}
 .grid.narrow .it .p{grid-column:2;grid-row:auto;order:-1}
 .grid.narrow .it img{order:-2}
-.grid.narrow .sell{grid-column:2}
+.grid.narrow .sell,.grid.narrow .stores{grid-column:2}
 @media (max-width:700px){.logo{font-size:38px}.sign-right{display:none}body{font-size:18px}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style></head><body>
@@ -1713,6 +1962,11 @@ td.none{color:#3d4c96}
         <label><input type="checkbox" name="ed" value="Box set">Box set</label>
         <span class="lbl film-only">Region:</span>
         <select id="region" class="film-only"><option value="">Any</option><option>Region B/2</option><option>Region free</option><option>Region A/1</option></select>
+        <span class="lbl pcbox" title="CeX still searches its whole website; results also show which of your local CeX stores have them">CeX near:
+          <input id="pc" placeholder="Postcode" maxlength="8" autocomplete="postal-code">
+          <select id="radius"><option value="5">5 mi</option><option value="10">10 mi</option><option value="15" selected>15 mi</option>
+            <option value="25">25 mi</option><option value="50">50 mi</option></select>
+          <span class="hint" id="pclabel"></span></span>
         <span class="hint" style="margin-left:auto">Editions<span class="film-only"> &amp; regions</span> only match when the listing says so</span>
         <button class="btn2" id="watchbtn" type="button" title="Save this search to your watchlist with a target price">+ Watch</button>
       </div>
@@ -1816,14 +2070,17 @@ document.getElementById('f').addEventListener('submit', async e => {
     if (!res.ok) body = `<div class="err">${esc(res.error)}</div>`;
     else if (!res.items.length) body = `<div class="empty">No titles found</div>`;
     else body = '<div class="list">' + res.items.map(i => `
-      <a class="it ${i.in_stock === false ? 'oos' : ''}" href="${esc(i.url)}" target="_blank" rel="noopener">
+      <a class="it ${i.in_stock === false ? 'oos' : ''}" href="${esc(i.url)}" target="_blank" rel="noopener"${k === 'cex' && i.box ? ` data-box="${esc(i.box)}"` : ''}>
         ${i.image ? `<img src="${esc(i.image)}" loading="lazy" referrerpolicy="no-referrer">` : '<img alt="">'}
         <div style="min-width:0"><div class="t">${esc(i.title)}</div>
-          <div class="m"><span class="tag t-${esc(i.format)}">${i.format === '4K' ? '4K UHD' : esc(i.format)}</span>${stickers(i)}${[i.condition, i.in_stock === false ? 'out of stock' : ''].filter(Boolean).map(esc).join(' · ')}</div></div>
-        <div class="p">${gbp(i.price)}</div>${sellLine(i)}</a>`).join('') + '</div>';
+          <div class="m"><span class="tag t-${esc(i.format)}">${i.format === '4K' ? '4K UHD' : esc(i.format)}</span>${stickers(i)}${[i.condition, i.in_stock === false ? (k === 'cex' ? 'out of stock online' : 'out of stock') : ''].filter(Boolean).map(esc).join(' · ')}</div></div>
+        <div class="p">${gbp(i.price)}</div>${sellLine(i)}${k === 'cex' && i.box ? '<div class="stores"></div>' : ''}</a>`).join('') + '</div>';
     el.innerHTML = `<h2><span class="nm">${n}</span><a href="${esc(res.search_url)}" target="_blank" rel="noopener" title="Open this search on the shop's site">↗</a></h2>
-      <div class="stat"><span>${res.ok ? String(res.total ?? res.items.length).padStart(3, '0') + ' titles' : 'Offline'}</span><span>${((res.ms ?? 0)/1000).toFixed(1)}s</span></div>` + body;
+      <div class="stat"><span>${res.ok ? String(res.total ?? res.items.length).padStart(3, '0') + ' titles' : 'Offline'}</span>
+        ${k === 'cex' && res.ok && res.items.length ? `<button class="btn2 mini" type="button" id="cexstores-btn" onclick="checkCexStores(true)" style="${LOCAL.located ? '' : 'display:none'}" title="Check the rest of the CeX results against your local stores">📍 All</button>` : ''}
+        <span>${((res.ms ?? 0)/1000).toFixed(1)}s</span></div>` + body;
     renderBest(all, fmts);
+    if (k === 'cex' && res.ok && res.items.length) checkCexStores(false);
   }));
   btn.disabled = false;
   document.getElementById('st-msg').textContent = 'Search complete';
@@ -1917,6 +2174,62 @@ async function checkFilms(tickedOnly, limit) {
   const queue = [...idx];
   await Promise.all([0, 1].map(async () => { while (queue.length && run === fgRun) await one(queue.shift()); }));
   if (run === fgRun) document.getElementById('st-msg').textContent = 'Filmography check complete';
+}
+
+// ---- your local CeX stores
+let LOCAL = {located: false};
+const pcIn = document.getElementById('pc'), radiusSel = document.getElementById('radius'), pcLabel = document.getElementById('pclabel');
+function showLocal() {
+  pcIn.value = LOCAL.postcode || '';
+  radiusSel.value = String(LOCAL.radius || 15);
+  pcLabel.textContent = LOCAL.located ? LOCAL.label : 'not set';
+  const b = document.getElementById('cexstores-btn'); if (b) b.style.display = LOCAL.located ? '' : 'none';
+}
+async function saveLocal() {
+  pcLabel.textContent = 'checking...';
+  try {
+    LOCAL = await api('/api/settings', {postcode: pcIn.value.trim(), radius: radiusSel.value});
+    showLocal();
+    document.getElementById('st-msg').textContent = LOCAL.located ? 'Local stores: within ' + LOCAL.radius + ' mi of ' + LOCAL.postcode : 'Local store checks off';
+    // re-check whatever CeX results are on screen
+    document.querySelectorAll('#c-cex .it[data-box]').forEach(e => { delete e.dataset.checked; e.classList.remove('local');
+      const s = e.querySelector('.stores'); if (s) s.innerHTML = ''; });
+    checkCexStores(false);
+  } catch (err) { pcLabel.textContent = err.message; }
+}
+pcIn.addEventListener('change', saveLocal);
+pcIn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); pcIn.blur(); } });
+radiusSel.addEventListener('change', saveLocal);
+(async () => { try { LOCAL = await api('/api/settings'); } catch (e) {} showLocal(); })();
+
+function storesLine(r, radius) {
+  if (!r) return '';
+  if (r.error) return '<span class="hint">Store check failed</span>';
+  if (r.near && r.near.length)
+    return '<b>In store</b>' + r.near.map(s => `${esc(s.name)}${s.miles != null ? ' ' + s.miles + ' mi' : ''} (${esc(s.qty)})`).join(' · ') +
+           (r.more ? ` · +${r.more} more` : '');
+  if (r.nearest) return `<span class="hint">None within ${radius} mi · nearest: ${esc(r.nearest.name)}${r.nearest.miles != null ? ' ' + r.nearest.miles + ' mi' : ''}</span>`;
+  return '<span class="hint">Not in any nearby store</span>';
+}
+async function checkCexStores(all) {
+  if (!LOCAL.located) return;
+  const els = [...document.querySelectorAll('#c-cex .it[data-box]')].filter(e => !e.dataset.checked);
+  // the first dozen straight away; the rest when you press 📍 Stores
+  const batch = els.slice(0, all ? 40 : 12);
+  if (!batch.length) return;
+  batch.forEach(e => { e.dataset.checked = '1'; e.querySelector('.stores').innerHTML = '<span class="loading">Checking local stores</span>'; });
+  try {
+    const d = await api('/api/cexstores?' + new URLSearchParams({ids: batch.map(e => e.dataset.box).join(',')}));
+    batch.forEach(e => { if (!e.isConnected) return;
+      const r = d.results[e.dataset.box];
+      e.querySelector('.stores').innerHTML = storesLine(r, d.radius);
+      e.classList.toggle('local', !!(r && r.near && r.near.length)); });
+    const left = document.querySelectorAll('#c-cex .it[data-box]:not([data-checked])').length;
+    document.getElementById('st-msg').textContent = 'Local stores checked' + (left ? ` · ${left} more: press 📍 All on CeX` : '');
+  } catch (err) {
+    batch.forEach(e => { if (!e.isConnected) return; delete e.dataset.checked;
+      e.querySelector('.stores').innerHTML = `<span class="hint">Store check failed: ${esc(err.message)}</span>`; });
+  }
 }
 
 // ---- watchlist
@@ -2108,6 +2421,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": f"film lookup failed: {type(e).__name__}: {e}"[:300]}, 502)
         if u.path == "/api/watch":
             return self._json(watch_api("get", {}))
+        if u.path == "/api/settings":
+            return self._json(public_settings())
+        if u.path == "/api/cexstores":
+            try:
+                return self._json(cex_local_stock(arg("ids").split(",")))
+            except ValueError as e:
+                return self._json({"error": str(e)}, 400)
+            except Exception as e:
+                return self._json({"error": f"{type(e).__name__}: {e}"[:300]}, 502)
         if u.path == "/api/sell":
             try:
                 return self._json(sell_lookup(arg("barcode")))
@@ -2128,6 +2450,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self._json(watch_api(u.path.rsplit("/", 1)[1], body))
             except (ValueError, TypeError) as e:
+                return self._json({"error": str(e)}, 400)
+        if u.path == "/api/settings":
+            try:
+                return self._json(update_settings(body))
+            except ValueError as e:
                 return self._json({"error": str(e)}, 400)
         if u.path == "/api/quit":
             self._json({"ok": True})
@@ -2298,6 +2625,27 @@ def self_test():
             cheapest = min(r["items"], key=lambda i: i["price"])
             return f"{r['total']} results, cheapest {cheapest['format']} £{cheapest['price']:.2f}"
         check(names.get(key, key), shop)
+
+    out("\nCeX local stores:")
+
+    def local():
+        st = load_settings()
+        where = st if st.get("lat") is not None else {"lat": 52.0315, "lon": -0.7521, "radius": 25,
+                                                      "label": "Milton Keynes (test location - set your postcode to test yours)"}
+        r = run_search("inception", [], True, ["cex"], pages=1)["cex"]
+        box = next((i.get("box") for i in r.get("items", []) if i.get("box")), None)
+        assert box, "no CeX result to check (see the CeX line above)"
+        res = cex_local_stock([box], where=where)["results"][box]
+        if res.get("error"):
+            raise RuntimeError(res["error"])
+        if res["near"]:
+            got = ", ".join(f"{x['name']} {x['miles']} mi ({x['qty']})" for x in res["near"])
+        elif res["nearest"]:
+            got = f"none within {int(float(where.get('radius', 15)))} mi, nearest {res['nearest']['name']} {res['nearest']['miles']} mi"
+        else:
+            got = "not in any nearby store"
+        return f"'Inception' near {where.get('label')}: {got}"
+    check("store stock lookup", local)
 
     out("\nShops - music (searching 'Oasis Definitely Maybe' on CD / vinyl / cassette, 1 page each):")
     for key in SEARCHERS:

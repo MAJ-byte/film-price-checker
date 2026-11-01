@@ -19,7 +19,7 @@ timeout /t 2 /nobreak >nul
 if exist ".venv" rmdir /s /q ".venv"
 for /d %%p in (browser_profile*) do rmdir /s /q "%%p"
 if exist "debug" rmdir /s /q "debug"
-del /q filmprice.log filmprice.ico selftest.txt 2>nul
+del /q filmprice.log filmprice.ico selftest.txt settings.json settings.json.tmp 2>nul
 echo  - packages and helper-browser data removed
 
 if exist watchlist.json (

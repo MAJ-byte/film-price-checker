@@ -21,6 +21,7 @@ Type a film, an actor or a director — or switch to the **Music** department an
 - **Filters** — price range, format, in-stock only, Steelbook, Limited/Collector's/Deluxe (incl. coloured and picture-disc vinyl), box sets, region (B/2, region free, A/1)
 - **Browse mode** — leave the title blank and set a price range to list everything in it (e.g. every Blu-ray under £2)
 - **Watchlist with price alerts** — save a film with a target price; it checks in the background and sends a Windows notification when it's at or under your target, with a little price-history graph
+- **Local CeX stock** — enter your postcode and every CeX result also shows which of your nearby CeX stores have it on the shelf, how many and how far away (even items that are out of stock online). CeX still searches its whole website as normal
 - **Sell prices** — see what CeX will pay (cash / voucher) on CeX results, or look up any disc by barcode
 - **Retro look** — 90s rental-store sign, CRT terminal screen, rental-sticker format labels. F1 to search, Esc to clear
 - **Runs entirely on your own PC** — no accounts, no sign-ups, nothing sent anywhere except the searches themselves
@@ -77,6 +78,7 @@ Desktop shortcuts, start-up and notifications are Windows-only; everything else 
 | Browse a price range | Leave the title blank, set **Min £ / Max £**, tick formats |
 | Hunt for special editions | Tick **Steelbook**, **Limited / Collector's** (**Limited / Deluxe** in Music) or **Box set**, and/or pick a **Region** |
 | Get a price alert | Type a title, put your target in **Max £**, press **+ Watch** |
+| See what your local CeX has | Type your postcode in **CeX near:** and pick a distance (5–50 miles). CeX results then show **IN STORE** with the nearest stores that have it; the first dozen are checked automatically, press **📍 All** on the CeX column for the rest |
 | See what CeX pays | Look for the green **SELL** line on CeX results, or type a barcode (film or music) into **Sell price** |
 | More results | Raise **Pages** (slower) |
 | Change the layout | **Columns**: 3, 4 or 5 shops per row |
@@ -105,8 +107,9 @@ Optional: free [eBay developer keys](https://developer.ebay.com) make eBay faste
 
 - The app only listens on your own PC (`127.0.0.1`) — other devices and websites can't use it.
 - It never signs in to anything and never touches your normal browser, its passwords or cookies. Blocked shops are opened in a separate helper browser (Edge or Chrome) with its own profile in the app folder.
-- Your watchlist, log and settings stay in the app folder. `.gitignore` keeps them out of Git.
-- Searches go only to the shops themselves and to [Wikidata](https://www.wikidata.org) for director / actor / artist lookups.
+- Your watchlist, log and settings stay in the app folder.
+- If you set a postcode for local CeX stock, it's saved only in `settings.json` on your PC. It's sent to the free [postcodes.io](https://postcodes.io) service to find its rough location, and that location is sent to CeX to find nearby stores. `.gitignore` keeps them out of Git.
+- Searches go only to the shops themselves, to [Wikidata](https://www.wikidata.org) for director / actor / artist lookups and, if you use local CeX stock, to postcodes.io.
 
 ## Good to know
 
